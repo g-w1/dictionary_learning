@@ -163,7 +163,6 @@ class ActivationBuffer:
                     hidden_states[i] = x.save()
 
             attn_mask = tracer._invoker.inputs[0]['attention_mask']
-            print(attn_mask.shape)
 
             self._n_activations += (attn_mask != 0).sum().item()     
 
