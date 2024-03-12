@@ -14,7 +14,7 @@ Implements a buffer of activations
 class ActivationBuffer:
     def __init__(self, 
                  data, # generator which yields text data
-                 model, # LanguageModel from which to extract activations
+                 model : LanguageModel, # LanguageModel from which to extract activations
                  submodules, # submodule of the model from which to extract activations
                  activation_save_dirs=None,  # paths to save cached activations, one per submodule; if an individual path is None, do not cache for that submodule
                  activation_cache_dirs=None,  # directories with cached activations to load
@@ -91,7 +91,6 @@ class ActivationBuffer:
             if (~self.read).sum() < self.n_ctxs * self.ctx_len // 2:
                 self.refresh()
 
-
         # return a batch
         unreads = (~self.read).nonzero().squeeze()
         if self.stop_refreshing and unreads.size(0) == 0:
@@ -145,36 +144,36 @@ class ActivationBuffer:
         for i, activations in enumerate(self.activations):
             self.activations[i] = activations[~self.read].contiguous()
         self._n_activations = (~self.read).sum().item()
-
         while self._n_activations < self.n_ctxs * self.ctx_len:
-                try:
-                    text_batch = self.text_batch()
-                except StopIteration:
-                    self.stop_refreshing = True
-                    break
+            try:
+                text_batch = self.text_batch()
+            except StopIteration:
+                self.stop_refreshing = True
+                break
 
-                with self.model.invoke(text_batch, truncation=True, max_length=self.ctx_len) as invoker:
-                    hidden_states = [None for _ in self.submodules]
-                    for i, submodule in enumerate(self.submodules):
-                        if self.io == 'in':
-                            x = submodule.input
-                        else:
-                            x = submodule.output
-                        if (type(x.shape) == tuple):
-                            x = x[0]
-                        hidden_states[i] = x.save()
+            with t.no_grad(), self.model.trace(text_batch, invoker_args={'truncation': True, 'max_length': self.ctx_len}) as tracer:
+                hidden_states = [None for _ in self.submodules]
+                for i, submodule in enumerate(self.submodules):
+                    if self.io == 'in':
+                        x = submodule.input
+                    else:
+                        x = submodule.output
+                    if (type(x.shape) == tuple):
+                        x = x[0]
+                    hidden_states[i] = x.save()
 
-                attn_mask = invoker.input['attention_mask']
-                
-                self._n_activations += (attn_mask != 0).sum().item()     
+            attn_mask = tracer._invoker.inputs[0]['attention_mask']
+            print(attn_mask.shape)
 
-                for i, activations in enumerate(self.activations):
-                    self.activations[i] = t.cat((
-                        activations,
-                        hidden_states[i].value[attn_mask != 0].to(activations.device)),
-                        dim=0
-                    )
-                    assert len(self.activations[i]) == self._n_activations
+            self._n_activations += (attn_mask != 0).sum().item()     
+
+            for i, submodule in enumerate(self.submodules):
+                self.activations[i] = t.cat((
+                    self.activations[i],
+                    hidden_states[i].value[attn_mask != 0].to(self.activations[i].device)),
+                    dim=0
+                )
+                assert len(self.activations[i]) == self._n_activations
 
         self.read = t.zeros(self._n_activations, dtype=t.bool, device=self.device)
 
