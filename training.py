@@ -205,7 +205,10 @@ def trainSAE(
             ae, num_samples_since_activated, optimizer, scheduler \
                 = aes[i], num_samples_since_activateds[i], optimizers[i], schedulers[i]
             optimizer.zero_grad()
-            loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i])
+            if ghost_thresholds is None:
+                loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated)
+            else:
+                loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i])
             loss.backward()
             optimizer.step()
             scheduler.step()
