@@ -65,6 +65,7 @@ class ActivationBuffer:
         self.in_batch_size = in_batch_size
         self.out_batch_size = out_batch_size
         self.device = device
+        self.stop_refreshing = False
     
     def __iter__(self):
         return self
@@ -86,12 +87,19 @@ class ActivationBuffer:
                     raise StopIteration
             return batch_activations
         # if buffer is less than half full, refresh
-        if (~self.read).sum() < self.n_ctxs * self.ctx_len // 2:
-            self.refresh()
+        if not self.stop_refreshing:
+            if (~self.read).sum() < self.n_ctxs * self.ctx_len // 2:
+                self.refresh()
+
 
         # return a batch
         unreads = (~self.read).nonzero().squeeze()
-        idxs = unreads[t.randperm(len(unreads), device=unreads.device)[:self.out_batch_size]]
+        if self.stop_refreshing and unreads.size(0) == 0:
+            raise StopIteration
+        elif self.stop_refreshing and unreads.size(0) < self.out_batch_size:
+            idxs = t.arange(len(unreads), device=unreads.device)
+        else:
+            idxs = unreads[t.randperm(len(unreads), device=unreads.device)[:self.out_batch_size]]
         self.read[idxs] = True
         batch_activations = [self.activations[i][idxs] for i in range(len(self.activations))]
         if self.activation_save_dirs is not None:
@@ -108,12 +116,17 @@ class ActivationBuffer:
         """
         if batch_size is None:
             batch_size = self.in_batch_size
+        data_list = []
         try:
-            return [
-                next(self.data) for _ in range(batch_size)
-            ]
+            for i in range(batch_size):
+                item = next(self.data)
+                data_list.append(item)
+            return data_list
         except StopIteration:
-            raise StopIteration("End of data stream reached")
+            if len(data_list) == 0:
+                raise StopIteration("End of data stream reached")
+            else:
+                return data_list
     
     def tokenized_batch(self, batch_size=None):
         """
@@ -134,8 +147,13 @@ class ActivationBuffer:
         self._n_activations = (~self.read).sum().item()
 
         while self._n_activations < self.n_ctxs * self.ctx_len:
-                
-                with self.model.invoke(self.text_batch(), truncation=True, max_length=self.ctx_len) as invoker:
+                try:
+                    text_batch = self.text_batch()
+                except StopIteration:
+                    self.stop_refreshing = True
+                    break
+
+                with self.model.invoke(text_batch, truncation=True, max_length=self.ctx_len) as invoker:
                     hidden_states = [None for _ in self.submodules]
                     for i, submodule in enumerate(self.submodules):
                         if self.io == 'in':
