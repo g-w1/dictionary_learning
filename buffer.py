@@ -27,6 +27,8 @@ class ActivationBuffer:
                  out_batch_size=8192, # size of batches in which to return activations
                  device='cpu' # device on which to store the activations
                  ):
+        if not isinstance(submodules, list):
+            submodules = [submodules]
         if activation_save_dirs is not None and activation_cache_dirs is not None:
             raise ValueError("Cannot specify both activation_save_dirs and activation_cache_dirs because we cannot cache while using cached values. Choose one.") 
         # dictionary of activations
@@ -181,3 +183,51 @@ class ActivationBuffer:
         Close the text stream and the underlying compressed file.
         """
         self.text_stream.close()
+
+
+# TODO: Make this be parallel
+class CachedBuffer():
+    def __init__(self, folder_name, device, batch_size=1024):
+        self.folder_name = folder_name
+        self.submodules = [0]
+
+        self.max_num = 0
+        for filename in os.listdir(folder_name):
+            if filename.split('.')[-1] == 'pt':
+                num = int(".".join(filename.split('.')[:-1]).split('-')[-2])
+                if num > self.max_num:
+                    self.prefix = "-".join(".".join(filename.split('.')[:-1]).split('-')[:-2])
+                    self.max_num = num
+            
+        self.batch_size = batch_size
+        self.cur_num = 0
+        self.device = device
+        self.buf = t.load(f"{self.folder_name}/{self.prefix}-{self.cur_num}-acts.pt").to(self.device)
+        self.buf_pos = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.buf_pos + self.batch_size > self.buf.size(0):
+            with t.profiler.record_function("loading_next_buf"):
+                first_part = self.buf[self.buf_pos:]
+                self.cur_num += 1
+                if self.cur_num >= self.max_num:
+                    raise StopIteration
+                self.buf = t.load(f"{self.folder_name}/{self.prefix}-{self.cur_num}-acts.pt").to(self.device)
+                self.buf_pos = self.batch_size - first_part.size(0)
+                second_part = self.buf[:self.buf_pos]
+                batch = t.cat([first_part, second_part], dim=0)
+                return [batch]
+
+        else:
+            with t.profiler.record_function("next_batch"):
+                batch = self.buf[self.buf_pos:self.buf_pos+self.batch_size]
+                self.buf_pos += self.batch_size
+                return [batch]
+                
+        
+
+
+            

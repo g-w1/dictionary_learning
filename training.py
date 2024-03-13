@@ -162,7 +162,9 @@ def trainSAE(
         checkpoint_offset=0, # if resuming training, the step number of the last checkpoint
         load_dirs=None, # if initializing from a pretrained dictionary, directories to load from
         log_steps=None, # how often to print statistics
-        device='cpu'):
+        device='cpu',
+        wandb=None,
+        prof=None):
     """
     Train and return sparse autoencoders for each submodule in the buffer.
     """
@@ -195,6 +197,8 @@ def trainSAE(
 
     schedulers = [t.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_fn) for optimizer in optimizers]
 
+    if prof is not None:
+        prof.start()
     for step, acts in enumerate(tqdm(buffer, total=steps)):
         real_step = step + checkpoint_offset
         if steps is not None and real_step >= steps:
@@ -205,10 +209,11 @@ def trainSAE(
             ae, num_samples_since_activated, optimizer, scheduler \
                 = aes[i], num_samples_since_activateds[i], optimizers[i], schedulers[i]
             optimizer.zero_grad()
-            if ghost_thresholds is None:
-                loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated)
-            else:
-                loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i])
+            with t.profiler.record_function("sae_loss"):
+                if ghost_thresholds is None:
+                    loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated)
+                else:
+                    loss = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i])
             loss.backward()
             optimizer.step()
             scheduler.step()
@@ -221,12 +226,17 @@ def trainSAE(
             # logging
             if log_steps is not None and step % log_steps == 0:
                 with t.no_grad():
-                    losses = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i], separate=True)
                     if ghost_thresholds is None:
+                        losses = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, separate=True)
                         mse_loss, sparsity_loss = losses
+                        if wandb is not None:
+                            wandb.update({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : 0})
                         print(f"step {step} MSE loss: {mse_loss}, sparsity loss: {sparsity_loss}")
                     else:
+                        losses = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i], separate=True)
                         mse_loss, sparsity_loss, ghost_loss = losses
+                        if wandb is not None:
+                            wandb.update({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : ghost_loss})
                         print(f"step {step} MSE loss: {mse_loss}, sparsity loss: {sparsity_loss}, ghost_loss: {ghost_loss}")
                     # dict_acts = ae.encode(acts)
                     # print(f"step {step} % inactive: {(dict_acts == 0).all(dim=0).sum() / dict_acts.shape[-1]}")
@@ -243,5 +253,10 @@ def trainSAE(
                     ae.state_dict(), 
                     os.path.join(save_dirs[i], "checkpoints", f"ae_{real_step}.pt")
                     )
+        if prof is not None:
+            prof.step()
+
+    if prof is not None:
+        prof.stop()
 
     return aes

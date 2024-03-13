@@ -97,9 +97,9 @@ def loss_recovered(
         logits_zero = output
 
     try:
-        tokens = tracer._invoker.inputs["input_ids"].to(logits_original.device)
+        tokens = tracer._invoker.inputs[0]["input_ids"].to(logits_original.device)
     except:
-        tokens = tracer._invoker.inputs["input"].to(logits_original.device)
+        tokens = tracer._invoker.inputs[0]["input"].to(logits_original.device)
 
     losses = []
     for logits in [logits_original, logits_reconstructed, logits_zero]:
@@ -116,7 +116,7 @@ def loss_recovered(
 
 def evaluate(
     model: LanguageModel,  # a nnsight LanguageModel
-    submodule,  # a submodule of model
+    submodules,  # a submodule of model
     dictionary,  # a dictionary
     activations,  # an ActivationBuffer
     max_len=None,  # max context length for loss recovered
@@ -127,56 +127,62 @@ def evaluate(
     io="out",  # can be 'in', 'out', or 'in_to_out'
     device="cpu",
 ):
+    if not isinstance(submodules, list):
+        submodules = [submodules]
     with t.no_grad():
 
-        out = {}  # dict of results
+        all_outs = {}
 
-        acts = next(activations).to(device)
+        all_acts = next(activations)
 
         # compute reconstruction (L2) loss and sparsity loss
-        mse_loss, sparsity_loss = sae_loss(
-            acts, dictionary, sparsity_penalty=None, use_entropy=entropy, separate=True
-        )
-        out["mse_loss"] = mse_loss.item() ** 2  # / acts.norm(dim=-1).mean().item() ** 2
-        out["sparsity_loss"] = sparsity_loss.item()
+        for i, submodule in enumerate(submodules):
+            out = {}
+            acts = all_acts[i].to(device)
+            mse_loss, sparsity_loss = sae_loss(
+                acts, dictionary[i], sparsity_penalty=None, use_entropy=entropy, separate=True
+            )
+            out["mse_loss"] = mse_loss.item() ** 2  # / acts.norm(dim=-1).mean().item() ** 2
+            out["sparsity_loss"] = sparsity_loss.item()
 
-        # compute variance explained
-        total_variance = t.var(acts, dim=0).sum()
-        residual_variance = t.var(acts - dictionary(acts), dim=0).sum()
-        out["variance_explained"] = (1 - residual_variance / total_variance).item()
+            # compute variance explained
+            total_variance = t.var(acts, dim=0).sum()
+            residual_variance = t.var(acts - dictionary[i](acts), dim=0).sum()
+            out["variance_explained"] = (1 - residual_variance / total_variance).item()
 
-        # compute mean L0 norm and percentage of neurons alive
-        features = dictionary.encode(acts)
-        actives = features != 0
-        out["l0"] = actives.float().sum(dim=-1).mean().item()
-        alives = actives.any(dim=0)
-        out["percent_alive"] = alives.float().mean().item()
+            # compute mean L0 norm and percentage of neurons alive
+            features = dictionary[i].encode(acts)
+            actives = features != 0
+            out["l0"] = actives.float().sum(dim=-1).mean().item()
+            alives = actives.any(dim=0)
+            out["percent_alive"] = alives.float().mean().item()
 
-        # compute histogram if needed
-        if hist_save_path is not None:
-            freqs = actives.float().mean(dim=0)
-            plt.figure()
-            plt.hist(freqs.cpu(), bins=t.logspace(-5, 0, 100))
-            plt.xscale("log")
-            plt.title(hist_title)
-            plt.savefig(hist_save_path)
-            plt.close()
+            # compute histogram if needed
+            if hist_save_path is not None:
+                freqs = actives.float().mean(dim=0)
+                plt.figure()
+                plt.hist(freqs.cpu(), bins=t.logspace(-5, 0, 100))
+                plt.xscale("log")
+                plt.title(hist_title)
+                plt.savefig(hist_save_path)
+                plt.close()
 
-        # compute loss recovered
-        loss_original, loss_reconstructed, loss_zero = loss_recovered(
-            activations.text_batch(batch_size=batch_size),
-            model,
-            [submodule],
-            [dictionary],
-            max_len=max_len,
-            io=io,
-            pct=False,
-        )
-        out["loss_original"] = loss_original
-        out["loss_reconstructed"] = loss_reconstructed
-        out["loss_zero"] = loss_zero
-        out["percent_recovered"] = (loss_reconstructed - loss_zero) / (
-            loss_original - loss_zero
-        )
+            # compute loss recovered
+            loss_original, loss_reconstructed, loss_zero = loss_recovered(
+                activations.text_batch(batch_size=batch_size),
+                model,
+                [submodule],
+                [dictionary[i]],
+                max_len=max_len,
+                io=io,
+                pct=False,
+            )
+            out["loss_original"] = loss_original
+            out["loss_reconstructed"] = loss_reconstructed
+            out["loss_zero"] = loss_zero
+            out["percent_recovered"] = (loss_reconstructed - loss_zero) / (
+                loss_original - loss_zero
+            )
 
+            all_outs[submodule] = out
         return out
