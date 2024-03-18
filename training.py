@@ -8,6 +8,8 @@ from .buffer import ActivationBuffer
 import os
 from tqdm import tqdm
 
+import wandb as wb
+
 EPS = 1e-8
 
 class ConstrainedAdam(t.optim.Adam):
@@ -230,13 +232,13 @@ def trainSAE(
                         losses = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, separate=True)
                         mse_loss, sparsity_loss = losses
                         if wandb is not None:
-                            wandb.update({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : 0})
+                            wb.log({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : 0})
                         print(f"step {step} MSE loss: {mse_loss}, sparsity loss: {sparsity_loss}")
                     else:
                         losses = sae_loss(act, ae, sparsity_penalty, use_entropy=entropy, num_samples_since_activated=num_samples_since_activated, ghost_threshold=ghost_thresholds[i], separate=True)
                         mse_loss, sparsity_loss, ghost_loss = losses
                         if wandb is not None:
-                            wandb.update({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : ghost_loss})
+                            wb.log({"step" : step, "mse_loss" : mse_loss, "sparsity_loss" : sparsity_loss, "ghost_loss" : ghost_loss})
                         print(f"step {step} MSE loss: {mse_loss}, sparsity loss: {sparsity_loss}, ghost_loss: {ghost_loss}")
                     # dict_acts = ae.encode(acts)
                     # print(f"step {step} % inactive: {(dict_acts == 0).all(dim=0).sum() / dict_acts.shape[-1]}")
